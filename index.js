@@ -1,6 +1,4 @@
-// Nếu chạy local thì mở comment dòng dưới, trên Railway thì không cần
-// require('dotenv').config(); 
-
+require('dotenv').config();
 const { 
     Client, 
     GatewayIntentBits, 
@@ -13,12 +11,12 @@ const {
     EmbedBuilder, 
     PermissionFlagsBits,
     StringSelectMenuBuilder,
-    StringSelectMenuOptionBuilder
+    StringSelectMenuOptionBuilder,
+    SlashCommandBuilder,
+    REST,
+    Routes
 } = require('discord.js');
-
 const dayjs = require('dayjs');
-
-const PREFIX = '!'; 
 
 // ==========================================
 // CẤU HÌNH DANH SÁCH PHÁI (CUSTOM EMOJI ID)
@@ -36,10 +34,8 @@ const FACTIONS = [
 
 const db = {
     config: {
-        startTime: dayjs().subtract(1, 'day').toISOString(), 
-        endTime: dayjs().add(7, 'day').toISOString(),
-        logChannelId: null, 
-        logMessageId: null 
+        startTime: null, 
+        endTime: null
     },
     votes: new Map() 
 };
@@ -52,38 +48,52 @@ const client = new Client({
     ] 
 });
 
-client.once('ready', () => {
+// ==========================================
+// ĐĂNG KÝ SLASH COMMANDS (Dùng CLIENT_ID)
+// ==========================================
+const commands = [
+    new SlashCommandBuilder()
+        .setName('setup-vote')
+        .setDescription('Tạo bảng khảo sát đổi phái (Admin)')
+        .addIntegerOption(option => 
+            option.setName('thoi-gian')
+                .setDescription('Số giờ mở vote tính từ lúc gõ lệnh (VD: 24, 48, 72...)')
+                .setRequired(true)
+                .setMinValue(1))
+].map(command => command.toJSON());
+
+const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+
+client.once('ready', async () => {
     console.log(`🤖 Bot ${client.user.tag} đã online!`);
+    
+    // Đăng ký lệnh toàn cầu (Global) bằng CLIENT_ID
+    try {
+        await rest.put(
+            Routes.applicationCommands(process.env.CLIENT_ID),
+            { body: commands },
+        );
+        console.log('✅ Đã đăng ký lệnh Slash thành công!');
+    } catch (error) {
+        console.error('❌ Lỗi đăng ký lệnh:', error);
+    }
 });
 
 // ==========================================
-// XỬ LÝ LỆNH CHỮ
+// XỬ LÝ LỆNH SLASH
 // ==========================================
-client.on('messageCreate', async message => {
-    if (message.author.bot || !message.content.startsWith(PREFIX)) return;
+client.on('interactionCreate', async interaction => {
+    
+    if (interaction.isChatInputCommand() && interaction.commandName === 'setup-vote') {
+        if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+            return interaction.reply({ content: '❌ Bạn cần quyền Admin để dùng lệnh này!', ephemeral: true });
+        }
 
-    const args = message.content.slice(PREFIX.length).trim().split(/ +/);
-    const command = args.shift().toLowerCase();
-
-    if (command === 'set-log') {
-        if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return message.reply('❌ Cần quyền Admin!');
-        db.config.logChannelId = message.channel.id;
-        db.config.logMessageId = null; 
-        return message.reply(`✅ Đã thiết lập kênh này làm kênh Log!`);
-    }
-
-    if (command === 'setup-vote') {
-        if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return message.reply('❌ Cần quyền Admin!');
-
-        const timeString = args.join(' '); 
-        const match = timeString.match(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2})/);
-
-        if (!match) return message.reply('❌ Sai cú pháp! VD: `!setup-vote 2026-11-01 08:00 2026-11-10 23:59`');
-
-        const start = dayjs(match[1], 'YYYY-MM-DD HH:mm');
-        const end = dayjs(match[2], 'YYYY-MM-DD HH:mm');
-
-        if (!start.isValid() || !end.isValid() || end.isBefore(start)) return message.reply('❌ Thời gian không hợp lệ!');
+        const hours = interaction.options.getInteger('thoi-gian');
+        
+        // Lấy thời gian hiện tại (lúc gõ lệnh) làm mốc bắt đầu
+        const start = dayjs(); 
+        const end = start.add(hours, 'hour');
 
         db.config.startTime = start.toISOString();
         db.config.endTime = end.toISOString();
@@ -93,7 +103,7 @@ client.on('messageCreate', async message => {
             .setDescription(
                 `Chào các hiệp khách! BQT muốn thăm dò ý kiến của mọi người về việc chuyển đổi phái.\n\n` +
                 `👉 Bấm nút bên dưới, chọn phái muốn đổi và điền thông tin.\n\n` +
-                `⏳ **Thời gian khảo sát:** Từ <t:${Math.floor(start.valueOf() / 1000)}:f> đến <t:${Math.floor(end.valueOf() / 1000)}:f>`
+                `⏳ **Thời gian khảo sát:** Từ <t:${Math.floor(start.valueOf() / 1000)}:f> đến <t:${Math.floor(end.valueOf() / 1000)}:f> (Kéo dài ${hours} tiếng)`
             )
             .setColor('#2b2d31')
             .setFooter({ text: 'Nghịch Thủy Hàn - Thăm dò chuyển phái' });
@@ -102,24 +112,28 @@ client.on('messageCreate', async message => {
             new ButtonBuilder().setCustomId('start_vote').setLabel('Bỏ Phiếu Đổi Phái').setEmoji('📝').setStyle(ButtonStyle.Primary)
         );
 
-        await message.channel.send({ embeds: [embed], components: [btn] });
-        message.delete().catch(() => {});
+        await interaction.reply({ embeds: [embed], components: [btn] });
     }
-});
 
-// ==========================================
-// XỬ LÝ TƯƠNG TÁC
-// ==========================================
-client.on('interactionCreate', async interaction => {
+    // ==========================================
+    // XỬ LÝ TƯƠNG TÁC (Nút, Menu, Modal)
+    // ==========================================
     
-    // BƯỚC 1: BẤM NÚT
+    // BƯỚC 1: BẤM NÚT "BỎ PHIẾU"
     if (interaction.isButton() && interaction.customId === 'start_vote') {
         const now = dayjs();
         const start = dayjs(db.config.startTime);
         const end = dayjs(db.config.endTime);
 
+        // Kiểm tra thời gian
+        if (!start.isValid() || !end.isValid()) {
+            return interaction.reply({ content: `❌ Chưa có đợt khảo sát nào được mở!`, ephemeral: true });
+        }
+
         if (now.isBefore(start)) return interaction.reply({ content: `⏳ Chưa tới giờ! Mở lúc <t:${Math.floor(start.valueOf() / 1000)}:f>.`, ephemeral: true });
         if (now.isAfter(end)) return interaction.reply({ content: `🔒 Đã hết hạn đăng ký!`, ephemeral: true });
+        
+        // Kiểm tra chống spam (1 user/1 vote)
         if (db.votes.has(interaction.user.id)) return interaction.reply({ content: `❌ Bạn đã đăng ký rồi!`, ephemeral: true });
 
         const selectMenu = new StringSelectMenuBuilder()
@@ -138,7 +152,7 @@ client.on('interactionCreate', async interaction => {
         await interaction.reply({ content: '👇 Hãy chọn phái bạn muốn đổi sang:', components: [row], ephemeral: true });
     }
 
-    // BƯỚC 2: CHỌN PHÁI
+    // BƯỚC 2: CHỌN PHÁI TỪ MENU -> HIỆN FORM
     if (interaction.isStringSelectMenu() && interaction.customId === 'select_faction') {
         const selectedFaction = interaction.values[0];
 
@@ -164,6 +178,7 @@ client.on('interactionCreate', async interaction => {
 
     // BƯỚC 3: SUBMIT FORM
     if (interaction.isModalSubmit() && interaction.customId.startsWith('vote_modal_')) {
+        // Rất quan trọng: deferReply để tránh lỗi "Ứng dụng không phản hồi kịp thời"
         await interaction.deferReply({ ephemeral: true });
 
         const newFaction = interaction.customId.replace('vote_modal_', '');
@@ -171,11 +186,13 @@ client.on('interactionCreate', async interaction => {
         const oldFaction = interaction.fields.getTextInputValue('old_faction');
         let timeOptionRaw = interaction.fields.getTextInputValue('time_option').toLowerCase();
 
+        // Chuẩn hóa thời gian hiển thị
         let timeOption = 'Chưa xác định';
         if (timeOptionRaw.includes('vinh')) timeOption = 'Vĩnh viễn';
         else if (timeOptionRaw.includes('3')) timeOption = 'Thử vài ba ngày';
         else if (timeOptionRaw.includes('vai')) timeOption = 'Thử vài ngày thấy hợp sẽ đổi hẳn';
 
+        // Lưu Database tạm
         db.votes.set(interaction.user.id, {
             userId: interaction.user.id,
             ingame,
@@ -185,60 +202,11 @@ client.on('interactionCreate', async interaction => {
             timestamp: dayjs().format('HH:mm - DD/MM/YYYY')
         });
 
+        // Báo thành công ẩn cho user (Vì không có kênh log)
         await interaction.editReply({ 
             content: `✅ **Đăng ký thành công!**\nHệ thống ghi nhận: **${ingame}** chuyển từ **${oldFaction}** sang **${newFaction}** (${timeOption}).` 
         });
-
-        await updateLogChannel(interaction.client);
     }
 });
-
-// ==========================================
-// CẬP NHẬT LOG
-// ==========================================
-async function updateLogChannel(client) {
-    if (!db.config.logChannelId) return; 
-    const channel = await client.channels.fetch(db.config.logChannelId).catch(() => null);
-    if (!channel) return;
-
-    const groupedVotes = {};
-    for (const [key, value] of db.votes) {
-        if (!groupedVotes[value.newFaction]) groupedVotes[value.newFaction] = [];
-        groupedVotes[value.newFaction].push(value);
-    }
-
-    let logContent = `**📊 DANH SÁCH ĐĂNG KÝ ĐỔI PHÁI**\n`;
-    logContent += `⏳ Thời gian: <t:${Math.floor(new Date(db.config.startTime).getTime() / 1000)}:f> - <t:${Math.floor(new Date(db.config.endTime).getTime() / 1000)}:f>\n\n`;
-
-    if (db.votes.size === 0) {
-        logContent += `*Chưa có ai đăng ký.*`;
-    } else {
-        for (const faction of FACTIONS) {
-            if (groupedVotes[faction.value]) {
-                logContent += `**${faction.emoji} ${faction.label}** (${groupedVotes[faction.value].length})\n`;
-                groupedVotes[faction.value].forEach((vote, index) => {
-                    logContent += `${index + 1}. <@${vote.userId}> (Ingame: ${vote.ingame}) - *${vote.timeOption}*\n`;
-                });
-                logContent += `\n`;
-            }
-        }
-    }
-
-    logContent += `*Cập nhật lúc: ${dayjs().format('HH:mm:ss')}*`;
-
-    try {
-        if (db.config.logMessageId) {
-            const oldMsg = await channel.messages.fetch(db.config.logMessageId).catch(() => null);
-            if (oldMsg) {
-                await oldMsg.edit(logContent);
-                return;
-            }
-        }
-        const newMsg = await channel.send(logContent);
-        db.config.logMessageId = newMsg.id;
-    } catch (error) {
-        console.error('Lỗi cập nhật log:', error);
-    }
-}
 
 client.login(process.env.DISCORD_TOKEN);
