@@ -2,188 +2,249 @@ require('dotenv').config();
 const { 
     Client, 
     GatewayIntentBits, 
-    EmbedBuilder, 
     ActionRowBuilder, 
     ButtonBuilder, 
     ButtonStyle, 
-    StringSelectMenuBuilder,
-    StringSelectMenuOptionBuilder,
-    PermissionsBitField,
-    ChannelType,
-    SlashCommandBuilder
+    ModalBuilder, 
+    TextInputBuilder, 
+    TextInputStyle, 
+    EmbedBuilder, 
+    SlashCommandBuilder,
+    REST,
+    Routes
 } = require('discord.js');
+const dayjs = require('dayjs');
 
-const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent
-    ]
-});
-
-// ID Emoji của các phái
-const EMOJIS = {
-    HuyenCo: '1566154772120076371',
-    ThanTuong: '1554525281396719696',
-    CuuLinh: '1554525279215419412',
-    ThietY: '1554525277340831794',
-    HuyetHa: '1554525275402797177',
-    ToVan: '1554525273192534107',
-    ToaiMong: '1554525271259095130',
-    LongNgam: '1554525268981321888'
+// ==========================================
+// 1. GIẢ LẬP DATABASE (Bạn thay bằng MongoDB/SQLite sau này)
+// ==========================================
+const db = {
+    // Thời gian mặc định: Mở từ hôm qua, đóng sau 7 ngày
+    config: {
+        startTime: dayjs().subtract(1, 'day').toISOString(),
+        endTime: dayjs().add(7, 'day').toISOString(),
+        logMessageId: null // Lưu ID tin nhắn log để edit
+    },
+    votes: new Map() // Lưu vote: Key = UserId
 };
 
-const PHÁI = [
-    { name: 'Huyền Cơ', emoji: EMOJIS.HuyenCo },
-    { name: 'Thần Tương', emoji: EMOJIS.ThanTuong }, 
-    { name: 'Cửu Linh', emoji: EMOJIS.CuuLinh },
-    { name: 'Thiết Y', emoji: EMOJIS.ThietY },
-    { name: 'Huyết Hà', emoji: EMOJIS.HuyetHa },
-    { name: 'Tố Vấn', emoji: EMOJIS.ToVan },
-    { name: 'Toái Mộng', emoji: EMOJIS.ToaiMong },
-    { name: 'Long Ngâm', emoji: EMOJIS.LongNgam }
-];
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-// Đăng ký Slash Command khi Bot khởi động
+// ==========================================
+// 2. ĐĂNG KÝ SLASH COMMANDS
+// ==========================================
+const commands = [
+    new SlashCommandBuilder()
+        .setName('setup-vote')
+        .setDescription('Tạo bảng khảo sát đổi phái (Chỉ Admin)')
+        .addStringOption(option => 
+            option.setName('ngay-bat-dau')
+                .setDescription('Định dạng: YYYY-MM-DD HH:mm (VD: 2026-11-01 08:00)')
+                .setRequired(true))
+        .addStringOption(option => 
+            option.setName('ngay-ket-thuc')
+                .setDescription('Định dạng: YYYY-MM-DD HH:mm')
+                .setRequired(true))
+].map(command => command.toJSON());
+
+const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+
 client.once('ready', async () => {
-    console.log(`🤖 Bot đã online: ${client.user.tag}`);
-
-    // BỔ SUNG: Thêm tùy chọn chọn kênh Log
-    const khaoSatCommand = new SlashCommandBuilder()
-        .setName('khaosat')
-        .setDescription('Gửi bảng khảo sát đổi phái vào một kênh chỉ định')
-        .addChannelOption(option => 
-            option.setName('kenh')
-                .setDescription('Chọn kênh (room) bạn muốn gửi bảng khảo sát vào')
-                .addChannelTypes(ChannelType.GuildText) 
-                .setRequired(true)
-        )
-        .addChannelOption(option => 
-            option.setName('kenh_log')
-                .setDescription('Chọn kênh để xem ai đã bình chọn (kênh Log)')
-                .addChannelTypes(ChannelType.GuildText) 
-                .setRequired(true) // Bắt buộc phải chọn kênh log để dễ quản lý
-        )
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator); 
-
+    console.log(`🤖 Bot ${client.user.tag} đã online!`);
     try {
-        // Đăng ký lệnh
-        await client.application.commands.create(khaoSatCommand);
-        console.log('✅ Đã đăng ký lệnh /khaosat thành công!');
+        await rest.put(
+            Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
+            { body: commands },
+        );
+        console.log('✅ Đã đăng ký lệnh Slash thành công!');
     } catch (error) {
         console.error('❌ Lỗi đăng ký lệnh:', error);
     }
 });
 
-// Xử lý tương tác
-client.on('interactionCreate', async (interaction) => {
+// ==========================================
+// 3. XỬ LÝ INTERACTION (Lệnh, Nút bấm, Modal)
+// ==========================================
+client.on('interactionCreate', async interaction => {
     
-    // --- XỬ LÝ LỆNH SLASH /khaosat ---
-    if (interaction.isChatInputCommand() && interaction.commandName === 'khaosat') {
-        const targetChannel = interaction.options.getChannel('kenh');
+    // --- A. LỆNH SETUP CỦA ADMIN ---
+    if (interaction.isChatInputCommand() && interaction.commandName === 'setup-vote') {
+        if (!interaction.member.permissions.has('Administrator')) {
+            return interaction.reply({ content: '❌ Bạn không có quyền Admin để dùng lệnh này!', ephemeral: true });
+        }
 
-        // LÀM ĐẸP LẠI GIAO DIỆN: Bỏ ảnh đám mây, sửa lại ngày tháng
+        const startStr = interaction.options.getString('ngay-bat-dau');
+        const endStr = interaction.options.getString('ngay-ket-thuc');
+
+        // Parse thời gian (Format: YYYY-MM-DD HH:mm)
+        const start = dayjs(startStr, 'YYYY-MM-DD HH:mm');
+        const end = dayjs(endStr, 'YYYY-MM-DD HH:mm');
+
+        if (!start.isValid() || !end.isValid()) {
+            return interaction.reply({ content: '❌ Sai định dạng thời gian! Vui lòng nhập đúng: `YYYY-MM-DD HH:mm`', ephemeral: true });
+        }
+        if (end.isBefore(start)) {
+            return interaction.reply({ content: '❌ Ngày kết thúc không thể trước ngày bắt đầu!', ephemeral: true });
+        }
+
+        // Lưu config
+        db.config.startTime = start.toISOString();
+        db.config.endTime = end.toISOString();
+        db.config.logMessageId = null; // Reset log cũ
+
+        // Tạo Embed hiển thị
         const embed = new EmbedBuilder()
-            .setColor('#2b2d31')
             .setTitle('📊 BẢNG KHẢO SÁT ĐỔI PHÁI - NGHỊCH THỦY HÀN')
             .setDescription(
-                'Chào các hiệp khách! BQT muốn thăm dò ý kiến của mọi người về việc chuyển đổi phái.\n\n' +
-                '👉 **Hãy bấm vào nút bên dưới** và chọn phái mà bạn đang muốn chuyển sang.\n' +
-                '*Ví dụ: Bạn đang chơi Toái Mộng, muốn đổi sang Huyền Cơ, hãy bấm nút và chọn Huyền Cơ.*\n\n' +
-                '🕒 **Thời gian khảo sát:** Đến hết ngày 10/11/2026' // Sửa lại ngày tại đây
+                `Chào các hiệp khách! BQT muốn thăm dò ý kiến của mọi người về việc chuyển đổi phái.\n\n` +
+                `👉 Hãy bấm vào nút bên dưới và điền thông tin.\n` +
+                `*Ví dụ: Đang chơi Toái Mộng, muốn đổi sang Huyền Cơ...*\n\n` +
+                `⏳ **Thời gian khảo sát:** Từ <t:${Math.floor(start.valueOf() / 1000)}:f> đến <t:${Math.floor(end.valueOf() / 1000)}:f>`
             )
-            // .setImage('https://link_anh_cua_ban.png') // Nếu muốn có ảnh bìa đẹp, hãy mở comment dòng này và dán link ảnh vào
-            .setFooter({ text: 'Nghịch Thủy Hàn - Thăm dò chuyển phái', iconURL: client.user.displayAvatarURL() })
+            .setColor('#2b2d31')
+            .setFooter({ text: 'Nghịch Thủy Hàn - Thăm dò chuyển phái' })
             .setTimestamp();
 
-        const button = new ButtonBuilder()
-            .setCustomId('btn_mo_khaosat')
-            .setLabel('Bỏ Phiếu Đổi Phái')
-            .setStyle(ButtonStyle.Primary)
-            .setEmoji('📝');
+        const btn = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('register_vote')
+                .setLabel('Bỏ Phiếu Đổi Phái')
+                .setEmoji('📝')
+                .setStyle(ButtonStyle.Primary)
+        );
 
-        const row = new ActionRowBuilder().addComponents(button);
-
-        try {
-            await targetChannel.send({ embeds: [embed], components: [row] });
-            await interaction.reply({ content: `✅ Đã gửi bảng khảo sát vào kênh ${targetChannel}`, ephemeral: true });
-        } catch (error) {
-            await interaction.reply({ content: `❌ Bot không có quyền gửi tin nhắn vào kênh ${targetChannel}.`, ephemeral: true });
-        }
+        await interaction.reply({ embeds: [embed], components: [btn] });
     }
 
-    // --- XỬ LÝ KHI BẤM NÚT "BỎ PHIẾU ĐỔI PHÁI" ---
-    if (interaction.isButton() && interaction.customId === 'btn_mo_khaosat') {
+    // --- B. KHI USER BẤM NÚT "BỎ PHIẾU" ---
+    if (interaction.isButton() && interaction.customId === 'register_vote') {
+        const now = dayjs();
+        const start = dayjs(db.config.startTime);
+        const end = dayjs(db.config.endTime);
+
+        // 1. Kiểm tra thời gian
+        if (now.isBefore(start)) {
+            return interaction.reply({ content: `⏳ Đợt khảo sát chưa bắt đầu. Vui lòng quay lại vào lúc <t:${Math.floor(start.valueOf() / 1000)}:f>.`, ephemeral: true });
+        }
+        if (now.isAfter(end)) {
+            return interaction.reply({ content: `🔒 Đợt khảo sát đã kết thúc. Hệ thống không nhận thêm phiếu.`, ephemeral: true });
+        }
+
+        // 2. Kiểm tra xem đã vote chưa (Chống Spam)
+        if (db.votes.has(interaction.user.id)) {
+            return interaction.reply({ content: `❌ Bạn đã đăng ký rồi! Mỗi tài khoản chỉ được đăng ký 1 lần. Nếu muốn đổi, hãy liên hệ Admin để Hủy ĐK.`, ephemeral: true });
+        }
+
+        // 3. Hiển thị Form (Modal)
+        const modal = new ModalBuilder().setCustomId('vote_modal').setTitle('Đăng Ký Đổi Phái');
+
+        const ingameInput = new TextInputBuilder().setCustomId('ingame').setLabel('Tên Ingame của bạn').setStyle(TextInputStyle.Short).setRequired(true);
+        const oldFactionInput = new TextInputBuilder().setCustomId('old_faction').setLabel('Phái hiện tại').setStyle(TextInputStyle.Short).setRequired(true);
+        const newFactionInput = new TextInputBuilder().setCustomId('new_faction').setLabel('Phái muốn đổi sang').setStyle(TextInputStyle.Short).setRequired(true);
         
-        const selectMenu = new StringSelectMenuBuilder()
-            .setCustomId('menu_chon_phai')
-            .setPlaceholder('Bạn muốn chuyển sang phái nào?')
-            .addOptions(
-                PHÁI.map(p => 
-                    new StringSelectMenuOptionBuilder()
-                        .setLabel(p.name)
-                        .setValue(p.name)
-                        .setEmoji({ id: p.emoji }) 
-                )
-            );
+        // Discord Modal không hỗ trợ thả xuống, nên dùng TextInput và yêu cầu gõ đúng
+        const timeInput = new TextInputBuilder()
+            .setCustomId('time_option')
+            .setLabel('Thời gian (Gõ: VinhVien / Thu3Ngay / ThuVaiNgay)')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('VinhVien / Thu3Ngay / ThuVaiNgay')
+            .setRequired(true);
 
-        const rowMenu = new ActionRowBuilder().addComponents(selectMenu);
+        modal.addComponents(
+            new ActionRowBuilder().addComponents(ingameInput),
+            new ActionRowBuilder().addComponents(oldFactionInput),
+            new ActionRowBuilder().addComponents(newFactionInput),
+            new ActionRowBuilder().addComponents(timeInput)
+        );
 
-        await interaction.reply({
-            content: '👇 **Vui lòng chọn phái bạn mong muốn chuyển sang trong danh sách dưới đây:**',
-            components: [rowMenu],
-            ephemeral: true 
-        });
+        await interaction.showModal(modal);
     }
 
-    // --- XỬ LÝ KHI CHỌN PHÁI TRONG MENU ---
-    if (interaction.isStringSelectMenu() && interaction.customId === 'menu_chon_phai') {
-        const phaiDaChon = interaction.values[0]; 
-        const phaiInfo = PHÁI.find(p => p.name === phaiDaChon);
+    // --- C. KHI USER SUBMIT FORM ---
+    if (interaction.isModalSubmit() && interaction.customId === 'vote_modal') {
+        // Tránh lỗi "Ứng dụng không phản hồi kịp thời"
+        await interaction.deferReply({ ephemeral: true });
 
-        // 1. Phản hồi ẩn cho người dùng (như cũ)
-        const confirmEmbed = new EmbedBuilder()
-            .setColor('#57F287')
-            .setDescription(`✅ Bạn đã đăng ký nguyện vọng chuyển sang phái **${phaiInfo.name}** <:${phaiInfo.name.replace(/\s/g, '')}:${phaiInfo.emoji}> thành công!`)
-            .setFooter({ text: 'Hệ thống đã ghi nhận phiếu của bạn.' });
+        const ingame = interaction.fields.getTextInputValue('ingame');
+        const oldFaction = interaction.fields.getTextInputValue('old_faction');
+        const newFaction = interaction.fields.getTextInputValue('new_faction');
+        let timeOptionRaw = interaction.fields.getTextInputValue('time_option').toLowerCase();
 
-        await interaction.update({
-            content: '', 
-            embeds: [confirmEmbed], 
-            components: [] 
+        // Chuẩn hóa thời gian hiển thị
+        let timeOption = 'Chưa xác định';
+        if (timeOptionRaw.includes('vinh')) timeOption = 'Vĩnh viễn';
+        else if (timeOptionRaw.includes('3')) timeOption = 'Thử vài ba ngày';
+        else if (timeOptionRaw.includes('vai')) timeOption = 'Thử vài ngày thấy hợp sẽ đổi hẳn';
+
+        // Lưu Database
+        db.votes.set(interaction.user.id, {
+            userId: interaction.user.id,
+            ingame,
+            oldFaction,
+            newFaction,
+            timeOption,
+            timestamp: dayjs().format('HH:mm - DD/MM/YYYY')
         });
 
-        // ==========================================
-        // 2. GỬI TIN NHẮN LOG CHO ADMIN
-        // Lấy ID kênh log từ tin nhắn gốc
-        // ==========================================
-        try {
-            // Lấy tin nhắn gốc chứa nút bấm (để tìm kênh log)
-            const message = interaction.message;
-            // Lấy thông tin lệnh từ interaction.message (chỉ áp dụng nếu bạn dùng cách lưu biến, ở đây mình lấy đại kênh log qua ID nếu có)
-            
-            // CÁCH TỐT NHẤT: Lưu ID kênh log vào đâu đó, hoặc đơn giản là tìm kênh có tên "log-khao-sat"
-            const logChannel = interaction.guild.channels.cache.find(channel => channel.name === 'log-khao-sat');
+        await interaction.editReply({ 
+            content: `✅ **Đăng ký thành công!**\nHệ thống đã ghi nhận bạn muốn chuyển sang phái **${newFaction}** (${timeOption}).` 
+        });
 
-            if (logChannel) {
-                const logEmbed = new EmbedBuilder()
-                    .setColor('#FEE75C') // Màu vàng
-                    .setTitle('📢 CÓ NGƯỜI VỪA BÌNH CHỌN ĐỔI PHÁI')
-                    .setThumbnail(interaction.user.displayAvatarURL())
-                    .addFields(
-                        { name: '👤 Người chơi:', value: `<@${interaction.user.id}> (${interaction.user.username})`, inline: true },
-                        { name: '🔄 Phái muốn chuyển sang:', value: `**${phaiInfo.name}** <:${phaiInfo.name.replace(/\s/g, '')}:${phaiInfo.emoji}>`, inline: true }
-                    )
-                    .setTimestamp();
-
-                await logChannel.send({ embeds: [logEmbed] });
-            } else {
-                console.log('Không tìm thấy kênh tên là "log-khao-sat" để gửi log.');
-            }
-        } catch (error) {
-            console.error('Lỗi khi gửi log:', error);
-        }
+        // Cập nhật kênh Log
+        await updateLogChannel(interaction.client);
     }
 });
 
-client.login(process.env.TOKEN);
+// ==========================================
+// 4. HÀM CẬP NHẬT KÊNH LOG (Gom nhóm như ảnh 2)
+// ==========================================
+async function updateLogChannel(client) {
+    const logChannelId = process.env.LOG_CHANNEL_ID;
+    const channel = await client.channels.fetch(logChannelId).catch(() => null);
+    if (!channel) return console.log('⚠️ Không tìm thấy kênh log!');
+
+    // 1. Phân loại phiếu bầu theo Phái muốn đổi
+    const groupedVotes = {};
+    for (const [key, value] of db.votes) {
+        if (!groupedVotes[value.newFaction]) groupedVotes[value.newFaction] = [];
+        groupedVotes[value.newFaction].push(value);
+    }
+
+    // 2. Tạo nội dung Log
+    let logContent = `**📊 DANH SÁCH ĐĂNG KÝ ĐỔI PHÁI**\n`;
+    logContent += `⏳ Thời gian: <t:${Math.floor(new Date(db.config.startTime).getTime() / 1000)}:f> - <t:${Math.floor(new Date(db.config.endTime).getTime() / 1000)}:f>\n\n`;
+
+    if (db.votes.size === 0) {
+        logContent += `*Chưa có ai đăng ký.*`;
+    } else {
+        for (const faction in groupedVotes) {
+            logContent += `🔥 **${faction}** (${groupedVotes[faction].length})\n`;
+            groupedVotes[faction].forEach((vote, index) => {
+                logContent += `${index + 1}. <@${vote.userId}> (Ingame: ${vote.ingame}) - *${vote.timeOption}*\n`;
+            });
+            logContent += `\n`;
+        }
+    }
+
+    logContent += `*Cập nhật lúc: ${dayjs().format('HH:mm:ss')}*`;
+
+    // 3. Kiểm tra xem đã có tin nhắn log cũ chưa để Edit (tránh spam kênh)
+    try {
+        if (db.config.logMessageId) {
+            const oldMsg = await channel.messages.fetch(db.config.logMessageId).catch(() => null);
+            if (oldMsg) {
+                await oldMsg.edit(logContent);
+                return;
+            }
+        }
+        
+        // Nếu chưa có, gửi tin nhắn mới và lưu ID
+        const newMsg = await channel.send(logContent);
+        db.config.logMessageId = newMsg.id;
+        
+    } catch (error) {
+        console.error('Lỗi cập nhật log:', error);
+    }
+}
+
+client.login(process.env.DISCORD_TOKEN);
