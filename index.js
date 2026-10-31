@@ -1,4 +1,6 @@
-require('dotenv').config();
+// Nếu chạy local thì mở comment dòng dưới, trên Railway thì không cần
+// require('dotenv').config(); 
+
 const { 
     Client, 
     GatewayIntentBits, 
@@ -13,14 +15,13 @@ const {
     StringSelectMenuBuilder,
     StringSelectMenuOptionBuilder
 } = require('discord.js');
+
 const dayjs = require('dayjs');
 
 const PREFIX = '!'; 
 
 // ==========================================
-// CẤU HÌNH DANH SÁCH PHÁI (SỬ DỤNG CUSTOM EMOJI ID)
-// Lưu ý: Tên tiếng Anh (VD: HuyenCo) phải viết liền, không dấu, không cách.
-// Nếu sai tên, Discord sẽ không hiện được icon.
+// CẤU HÌNH DANH SÁCH PHÁI (CUSTOM EMOJI ID)
 // ==========================================
 const FACTIONS = [
     { label: 'Huyền Cơ', value: 'Huyền Cơ', emoji: '<:HuyenCo:1566154772120076371>' },
@@ -53,12 +54,10 @@ const client = new Client({
 
 client.once('ready', () => {
     console.log(`🤖 Bot ${client.user.tag} đã online!`);
-    console.log(`💡 Gõ ${PREFIX}set-log tại kênh muốn làm log.`);
-    console.log(`💡 Gõ ${PREFIX}setup-vote YYYY-MM-DD HH:mm YYYY-MM-DD HH:mm để tạo bảng vote.`);
 });
 
 // ==========================================
-// XỬ LÝ LỆNH CHỮ (PREFIX)
+// XỬ LÝ LỆNH CHỮ
 // ==========================================
 client.on('messageCreate', async message => {
     if (message.author.bot || !message.content.startsWith(PREFIX)) return;
@@ -109,11 +108,11 @@ client.on('messageCreate', async message => {
 });
 
 // ==========================================
-// XỬ LÝ TƯƠNG TÁC (Nút, Menu, Modal)
+// XỬ LÝ TƯƠNG TÁC
 // ==========================================
 client.on('interactionCreate', async interaction => {
     
-    // --- BƯỚC 1: BẤM NÚT "BỎ PHIẾU" -> HIỆN MENU CHỌN PHÁI ---
+    // BƯỚC 1: BẤM NÚT
     if (interaction.isButton() && interaction.customId === 'start_vote') {
         const now = dayjs();
         const start = dayjs(db.config.startTime);
@@ -123,7 +122,6 @@ client.on('interactionCreate', async interaction => {
         if (now.isAfter(end)) return interaction.reply({ content: `🔒 Đã hết hạn đăng ký!`, ephemeral: true });
         if (db.votes.has(interaction.user.id)) return interaction.reply({ content: `❌ Bạn đã đăng ký rồi!`, ephemeral: true });
 
-        // Tạo Menu thả xuống 8 phái theo đúng thứ tự (Có kèm Emoji ID)
         const selectMenu = new StringSelectMenuBuilder()
             .setCustomId('select_faction')
             .setPlaceholder('Chọn phái mà bạn muốn chuyển sang...')
@@ -132,18 +130,17 @@ client.on('interactionCreate', async interaction => {
                     new StringSelectMenuOptionBuilder()
                         .setLabel(faction.label)
                         .setValue(faction.value)
-                        .setEmoji(faction.emoji) // Nạp Custom Emoji vào đây
+                        .setEmoji(faction.emoji) 
                 )
             );
 
         const row = new ActionRowBuilder().addComponents(selectMenu);
-
         await interaction.reply({ content: '👇 Hãy chọn phái bạn muốn đổi sang:', components: [row], ephemeral: true });
     }
 
-    // --- BƯỚC 2: CHỌN PHÁI XONG -> HIỆN FORM NHẬP LIỆU ---
+    // BƯỚC 2: CHỌN PHÁI
     if (interaction.isStringSelectMenu() && interaction.customId === 'select_faction') {
-        const selectedFaction = interaction.values[0]; // Phái user vừa chọn
+        const selectedFaction = interaction.values[0];
 
         const modal = new ModalBuilder().setCustomId(`vote_modal_${selectedFaction}`).setTitle(`Đổi sang phái: ${selectedFaction}`);
 
@@ -165,12 +162,11 @@ client.on('interactionCreate', async interaction => {
         await interaction.showModal(modal);
     }
 
-    // --- BƯỚC 3: SUBMIT FORM ---
+    // BƯỚC 3: SUBMIT FORM
     if (interaction.isModalSubmit() && interaction.customId.startsWith('vote_modal_')) {
         await interaction.deferReply({ ephemeral: true });
 
         const newFaction = interaction.customId.replace('vote_modal_', '');
-        
         const ingame = interaction.fields.getTextInputValue('ingame');
         const oldFaction = interaction.fields.getTextInputValue('old_faction');
         let timeOptionRaw = interaction.fields.getTextInputValue('time_option').toLowerCase();
@@ -180,7 +176,6 @@ client.on('interactionCreate', async interaction => {
         else if (timeOptionRaw.includes('3')) timeOption = 'Thử vài ba ngày';
         else if (timeOptionRaw.includes('vai')) timeOption = 'Thử vài ngày thấy hợp sẽ đổi hẳn';
 
-        // Lưu Database
         db.votes.set(interaction.user.id, {
             userId: interaction.user.id,
             ingame,
@@ -199,7 +194,7 @@ client.on('interactionCreate', async interaction => {
 });
 
 // ==========================================
-// HÀM CẬP NHẬT LOG (TỰ ĐỘNG IN RA THEO THỨ TỰ)
+// CẬP NHẬT LOG
 // ==========================================
 async function updateLogChannel(client) {
     if (!db.config.logChannelId) return; 
@@ -218,10 +213,8 @@ async function updateLogChannel(client) {
     if (db.votes.size === 0) {
         logContent += `*Chưa có ai đăng ký.*`;
     } else {
-        // Vòng lặp duyệt qua mảng FACTIONS để in ra đúng thứ tự từ trên xuống dưới
         for (const faction of FACTIONS) {
             if (groupedVotes[faction.value]) {
-                // In Emoji chuẩn của phái
                 logContent += `**${faction.emoji} ${faction.label}** (${groupedVotes[faction.value].length})\n`;
                 groupedVotes[faction.value].forEach((vote, index) => {
                     logContent += `${index + 1}. <@${vote.userId}> (Ingame: ${vote.ingame}) - *${vote.timeOption}*\n`;
