@@ -14,7 +14,8 @@ const {
     REST,
     Routes,
     StringSelectMenuBuilder,
-    StringSelectMenuOptionBuilder
+    StringSelectMenuOptionBuilder,
+    ChannelType // Cần import thêm cái này để giới hạn chỉ chọn kênh chat
 } = require('discord.js');
 const dayjs = require('dayjs');
 
@@ -50,12 +51,17 @@ const client = new Client({
 });
 
 // ==========================================
-// ĐĂNG KÝ SLASH COMMANDS
+// ĐĂNG KÝ SLASH COMMANDS (Thêm tuỳ chọn Kênh)
 // ==========================================
 const commands = [
     new SlashCommandBuilder()
         .setName('setup-vote')
         .setDescription('Tạo bảng khảo sát đổi phái (Admin)')
+        .addChannelOption(option => 
+            option.setName('kenh')
+                .setDescription('Chọn kênh để gửi bảng khảo sát')
+                .addChannelTypes(ChannelType.GuildText) // Chỉ cho chọn kênh chat chữ
+                .setRequired(true))
         .addIntegerOption(option => 
             option.setName('thoi-gian')
                 .setDescription('Số giờ mở vote (VD: 24, 48, 72...)')
@@ -105,10 +111,8 @@ function generateLogContent() {
                 
                 groupedVotes[faction.value].forEach((vote, index) => {
                     logContent += `${index + 1}. <@${vote.userId}> (Ingame: ${vote.ingame})\n`;
-                    // Lấy icon của phái cũ
                     const oldFactionData = FACTIONS.find(f => f.value === vote.oldFaction);
                     const oldFactionIcon = oldFactionData ? oldFactionData.emoji : '💬';
-                    
                     logContent += `   └ Từ: ${oldFactionIcon} ${vote.oldFaction} | T/gian: *${vote.timeOption}*\n`;
                 });
                 logContent += `\n`;
@@ -140,6 +144,7 @@ client.on('interactionCreate', async interaction => {
 
         await interaction.deferReply({ ephemeral: true });
 
+        const targetChannel = interaction.options.getChannel('kenh'); // Lấy kênh được chọn
         const hours = interaction.options.getInteger('thoi-gian');
         const start = dayjs(); 
         const end = start.add(hours, 'hour');
@@ -163,8 +168,14 @@ client.on('interactionCreate', async interaction => {
             new ButtonBuilder().setCustomId('register_vote').setLabel('Bỏ Phiếu Đổi Phái').setEmoji('📝').setStyle(ButtonStyle.Primary)
         );
 
-        await interaction.channel.send({ embeds: [embed], components: [btn] });
+        try {
+            // Gửi bảng khảo sát vào kênh Admin đã chọn
+            await targetChannel.send({ embeds: [embed], components: [btn] });
+        } catch (error) {
+            return interaction.editReply({ content: `❌ Bot không có quyền gửi tin nhắn vào kênh <#${targetChannel.id}>. Vui lòng kiểm tra lại quyền!` });
+        }
 
+        // Tạo tin nhắn Log trên kênh Log (nếu có cấu hình)
         if (process.env.LOG_CHANNEL_ID) {
             const logChannel = await client.channels.fetch(process.env.LOG_CHANNEL_ID).catch(() => null);
             if (logChannel) {
@@ -175,7 +186,7 @@ client.on('interactionCreate', async interaction => {
                 db.config.logMessageId = initialLog.id;
             }
         }
-        await interaction.editReply({ content: '✅ Đã tạo bảng khảo sát thành công!' });
+        await interaction.editReply({ content: `✅ Đã tạo bảng khảo sát thành công tại kênh <#${targetChannel.id}>!` });
     }
 
     // 3. BẤM NÚT "BỎ PHIẾU" -> CHỌN PHÁI MỚI
@@ -258,16 +269,14 @@ client.on('interactionCreate', async interaction => {
         await updateLogChannel(interaction.client);
     }
 
-    // 7. BẤM NÚT "HỦY ĐĂNG KÝ CỦA TÔI" (CHỈ USER ĐÓ MỚI HỦY ĐƯỢC)
+    // 7. BẤM NÚT "HỦY ĐĂNG KÝ CỦA TÔI"
     if (interaction.isButton() && interaction.customId === 'cancel_my_vote') {
         const userId = interaction.user.id;
 
-        // Kiểm tra xem người bấm có trong danh sách vote không
         if (!db.votes.has(userId)) {
             return interaction.reply({ content: `❌ Bạn chưa đăng ký đổi phái, không thể hủy!`, ephemeral: true });
         }
 
-        // Hiển thị nút xác nhận (Chỉ người bấm thấy)
         const confirmBtn = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('confirm_cancel_my_vote').setLabel('Xác Nhận Hủy').setEmoji('⚠️').setStyle(ButtonStyle.Danger),
             new ButtonBuilder().setCustomId('abort_cancel').setLabel('Không Hủy Nữa').setStyle(ButtonStyle.Secondary)
@@ -297,7 +306,7 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // 9. HỦY THAO TÁC XÓA (Bấm nhầm)
+    // 9. HỦY THAO TÁC XÓA
     if (interaction.isButton() && interaction.customId === 'abort_cancel') {
         await interaction.update({ content: `✅ Đã hủy thao tác xóa. Phiếu của bạn vẫn được giữ nguyên.`, components: [] });
     }
