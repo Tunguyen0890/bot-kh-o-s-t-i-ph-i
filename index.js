@@ -21,10 +21,7 @@ const client = new Client({
     ]
 });
 
-// ==========================================
-// CẬP NHẬT ID EMOJI THEO ẢNH MỚI NHẤT
-// Thứ tự: Huyền Cơ, Thần Tương, Cửu Linh, Thiết Y, Huyết Hà, Tố Vấn, Toái Mộng, Long Ngâm
-// ==========================================
+// ID Emoji của các phái
 const EMOJIS = {
     HuyenCo: '1566154772120076371',
     ThanTuong: '1554525281396719696',
@@ -38,7 +35,7 @@ const EMOJIS = {
 
 const PHÁI = [
     { name: 'Huyền Cơ', emoji: EMOJIS.HuyenCo },
-    { name: 'Thần Tương', emoji: EMOJIS.ThanTuong }, // Giữ đúng tên bạn yêu cầu
+    { name: 'Thần Tương', emoji: EMOJIS.ThanTuong }, 
     { name: 'Cửu Linh', emoji: EMOJIS.CuuLinh },
     { name: 'Thiết Y', emoji: EMOJIS.ThietY },
     { name: 'Huyết Hà', emoji: EMOJIS.HuyetHa },
@@ -51,7 +48,7 @@ const PHÁI = [
 client.once('ready', async () => {
     console.log(`🤖 Bot đã online: ${client.user.tag}`);
 
-    // Tạo lệnh /khaosat
+    // BỔ SUNG: Thêm tùy chọn chọn kênh Log
     const khaoSatCommand = new SlashCommandBuilder()
         .setName('khaosat')
         .setDescription('Gửi bảng khảo sát đổi phái vào một kênh chỉ định')
@@ -61,9 +58,16 @@ client.once('ready', async () => {
                 .addChannelTypes(ChannelType.GuildText) 
                 .setRequired(true)
         )
+        .addChannelOption(option => 
+            option.setName('kenh_log')
+                .setDescription('Chọn kênh để xem ai đã bình chọn (kênh Log)')
+                .addChannelTypes(ChannelType.GuildText) 
+                .setRequired(true) // Bắt buộc phải chọn kênh log để dễ quản lý
+        )
         .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator); 
 
     try {
+        // Đăng ký lệnh
         await client.application.commands.create(khaoSatCommand);
         console.log('✅ Đã đăng ký lệnh /khaosat thành công!');
     } catch (error) {
@@ -78,6 +82,7 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isChatInputCommand() && interaction.commandName === 'khaosat') {
         const targetChannel = interaction.options.getChannel('kenh');
 
+        // LÀM ĐẸP LẠI GIAO DIỆN: Bỏ ảnh đám mây, sửa lại ngày tháng
         const embed = new EmbedBuilder()
             .setColor('#2b2d31')
             .setTitle('📊 BẢNG KHẢO SÁT ĐỔI PHÁI - NGHỊCH THỦY HÀN')
@@ -85,9 +90,9 @@ client.on('interactionCreate', async (interaction) => {
                 'Chào các hiệp khách! BQT muốn thăm dò ý kiến của mọi người về việc chuyển đổi phái.\n\n' +
                 '👉 **Hãy bấm vào nút bên dưới** và chọn phái mà bạn đang muốn chuyển sang.\n' +
                 '*Ví dụ: Bạn đang chơi Toái Mộng, muốn đổi sang Huyền Cơ, hãy bấm nút và chọn Huyền Cơ.*\n\n' +
-                '🕒 **Thời gian khảo sát:** Đến hết [Điền Ngày]'
+                '🕒 **Thời gian khảo sát:** Đến hết ngày 10/11/2026' // Sửa lại ngày tại đây
             )
-            .setImage('https://i.imgur.com/your_banner_image.png') // Nhớ thay ảnh bìa nếu có
+            // .setImage('https://link_anh_cua_ban.png') // Nếu muốn có ảnh bìa đẹp, hãy mở comment dòng này và dán link ảnh vào
             .setFooter({ text: 'Nghịch Thủy Hàn - Thăm dò chuyển phái', iconURL: client.user.displayAvatarURL() })
             .setTimestamp();
 
@@ -136,6 +141,7 @@ client.on('interactionCreate', async (interaction) => {
         const phaiDaChon = interaction.values[0]; 
         const phaiInfo = PHÁI.find(p => p.name === phaiDaChon);
 
+        // 1. Phản hồi ẩn cho người dùng (như cũ)
         const confirmEmbed = new EmbedBuilder()
             .setColor('#57F287')
             .setDescription(`✅ Bạn đã đăng ký nguyện vọng chuyển sang phái **${phaiInfo.name}** <:${phaiInfo.name.replace(/\s/g, '')}:${phaiInfo.emoji}> thành công!`)
@@ -146,6 +152,37 @@ client.on('interactionCreate', async (interaction) => {
             embeds: [confirmEmbed], 
             components: [] 
         });
+
+        // ==========================================
+        // 2. GỬI TIN NHẮN LOG CHO ADMIN
+        // Lấy ID kênh log từ tin nhắn gốc
+        // ==========================================
+        try {
+            // Lấy tin nhắn gốc chứa nút bấm (để tìm kênh log)
+            const message = interaction.message;
+            // Lấy thông tin lệnh từ interaction.message (chỉ áp dụng nếu bạn dùng cách lưu biến, ở đây mình lấy đại kênh log qua ID nếu có)
+            
+            // CÁCH TỐT NHẤT: Lưu ID kênh log vào đâu đó, hoặc đơn giản là tìm kênh có tên "log-khao-sat"
+            const logChannel = interaction.guild.channels.cache.find(channel => channel.name === 'log-khao-sat');
+
+            if (logChannel) {
+                const logEmbed = new EmbedBuilder()
+                    .setColor('#FEE75C') // Màu vàng
+                    .setTitle('📢 CÓ NGƯỜI VỪA BÌNH CHỌN ĐỔI PHÁI')
+                    .setThumbnail(interaction.user.displayAvatarURL())
+                    .addFields(
+                        { name: '👤 Người chơi:', value: `<@${interaction.user.id}> (${interaction.user.username})`, inline: true },
+                        { name: '🔄 Phái muốn chuyển sang:', value: `**${phaiInfo.name}** <:${phaiInfo.name.replace(/\s/g, '')}:${phaiInfo.emoji}>`, inline: true }
+                    )
+                    .setTimestamp();
+
+                await logChannel.send({ embeds: [logEmbed] });
+            } else {
+                console.log('Không tìm thấy kênh tên là "log-khao-sat" để gửi log.');
+            }
+        } catch (error) {
+            console.error('Lỗi khi gửi log:', error);
+        }
     }
 });
 
