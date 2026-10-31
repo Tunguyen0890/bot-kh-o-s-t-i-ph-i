@@ -60,7 +60,11 @@ const commands = [
             option.setName('thoi-gian')
                 .setDescription('Số giờ mở vote (VD: 24, 48, 72...)')
                 .setRequired(true)
-                .setMinValue(1))
+                .setMinValue(1)
+                .setMaxValue(8760)),
+    new SlashCommandBuilder()
+        .setName('check-vote')
+        .setDescription('Xem nhanh danh sách đăng ký đổi phái hiện tại')
 ].map(command => command.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -79,15 +83,62 @@ client.once('ready', async () => {
 });
 
 // ==========================================
+// HÀM TẠO NỘI DUNG LOG
+// ==========================================
+function generateLogContent() {
+    const groupedVotes = {};
+    for (const [key, value] of db.votes) {
+        if (!groupedVotes[value.newFaction]) groupedVotes[value.newFaction] = [];
+        groupedVotes[value.newFaction].push(value);
+    }
+
+    let logContent = `📊 **DANH SÁCH ĐĂNG KÝ ĐỔI PHÁI**\n`;
+    logContent += `⏳ Thời gian: <t:${Math.floor(new Date(db.config.startTime).getTime() / 1000)}:f> - <t:${Math.floor(new Date(db.config.endTime).getTime() / 1000)}:f>\n`;
+    logContent += `*(Mỗi người chỉ tính 1 phiếu - Có thể thay đổi phái tùy thích)*\n\n`;
+
+    if (db.votes.size === 0) {
+        logContent += `*Chưa có ai đăng ký.*`;
+    } else {
+        for (const faction of FACTIONS) {
+            if (groupedVotes[faction.value]) {
+                logContent += `**${faction.emoji} ${faction.label} (${groupedVotes[faction.value].length})**\n`;
+                
+                groupedVotes[faction.value].forEach((vote, index) => {
+                    logContent += `${index + 1}. <@${vote.userId}> (Ingame: ${vote.ingame})\n`;
+                    // Lấy icon của phái cũ
+                    const oldFactionData = FACTIONS.find(f => f.value === vote.oldFaction);
+                    const oldFactionIcon = oldFactionData ? oldFactionData.emoji : '💬';
+                    
+                    logContent += `   └ Từ: ${oldFactionIcon} ${vote.oldFaction} | T/gian: *${vote.timeOption}*\n`;
+                });
+                logContent += `\n`;
+            }
+        }
+    }
+    logContent += `*Cập nhật lúc: ${dayjs().format('HH:mm:ss')}*`;
+    return logContent;
+}
+
+// ==========================================
 // XỬ LÝ LỆNH SLASH & TƯƠNG TÁC
 // ==========================================
 client.on('interactionCreate', async interaction => {
     
-    // 1. LỆNH SETUP VOTE CỦA ADMIN
+    // 1. LỆNH CHECK VOTE
+    if (interaction.isChatInputCommand() && interaction.commandName === 'check-vote') {
+        if (!db.config.startTime) {
+            return interaction.reply({ content: '❌ Hiện chưa có đợt khảo sát nào!', ephemeral: true });
+        }
+        return interaction.reply({ content: generateLogContent(), ephemeral: true });
+    }
+
+    // 2. LỆNH SETUP VOTE (Admin)
     if (interaction.isChatInputCommand() && interaction.commandName === 'setup-vote') {
         if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
             return interaction.reply({ content: '❌ Bạn cần quyền Admin!', ephemeral: true });
         }
+
+        await interaction.deferReply({ ephemeral: true });
 
         const hours = interaction.options.getInteger('thoi-gian');
         const start = dayjs(); 
@@ -112,19 +163,22 @@ client.on('interactionCreate', async interaction => {
             new ButtonBuilder().setCustomId('register_vote').setLabel('Bỏ Phiếu Đổi Phái').setEmoji('📝').setStyle(ButtonStyle.Primary)
         );
 
-        await interaction.reply({ embeds: [embed], components: [btn] });
-        
-        // Tạo tin nhắn Log rỗng
+        await interaction.channel.send({ embeds: [embed], components: [btn] });
+
         if (process.env.LOG_CHANNEL_ID) {
             const logChannel = await client.channels.fetch(process.env.LOG_CHANNEL_ID).catch(() => null);
             if (logChannel) {
-                const initialLog = await logChannel.send('Đang khởi tạo bảng log...');
+                const btnCancelRow = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('cancel_my_vote').setLabel('Hủy Đăng Ký Của Tôi').setEmoji('🗑️').setStyle(ButtonStyle.Danger)
+                );
+                const initialLog = await logChannel.send({ content: 'Đang khởi tạo bảng log...', components: [btnCancelRow] });
                 db.config.logMessageId = initialLog.id;
             }
         }
+        await interaction.editReply({ content: '✅ Đã tạo bảng khảo sát thành công!' });
     }
 
-    // 2. BẤM NÚT "BỎ PHIẾU" -> CHỌN PHÁI MUỐN ĐỔI (PHÁI MỚI)
+    // 3. BẤM NÚT "BỎ PHIẾU" -> CHỌN PHÁI MỚI
     if (interaction.isButton() && interaction.customId === 'register_vote') {
         const now = dayjs();
         const start = dayjs(db.config.startTime);
@@ -134,46 +188,33 @@ client.on('interactionCreate', async interaction => {
         if (now.isBefore(start)) return interaction.reply({ content: `⏳ Chưa tới giờ!`, ephemeral: true });
         if (now.isAfter(end)) return interaction.reply({ content: `🔒 Đã hết hạn đăng ký!`, ephemeral: true });
 
-        // Menu chọn Phái mới
         const selectMenu = new StringSelectMenuBuilder()
             .setCustomId('select_new_faction')
             .setPlaceholder('Bước 1: Chọn phái mà bạn MUỐN ĐỔI SANG...')
-            .addOptions(
-                FACTIONS.map(faction => 
-                    new StringSelectMenuOptionBuilder()
-                        .setLabel(faction.label)
-                        .setValue(faction.value)
-                        .setEmoji(faction.emoji) 
-                )
-            );
+            .addOptions(FACTIONS.map(faction => new StringSelectMenuOptionBuilder().setLabel(faction.label).setValue(faction.value).setEmoji(faction.emoji)));
 
         const row = new ActionRowBuilder().addComponents(selectMenu);
         await interaction.reply({ content: '👇 **Bước 1:** Hãy chọn phái bạn muốn đổi sang:', components: [row], ephemeral: true });
     }
 
-    // 3. CHỌN XONG PHÁI MỚI -> HIỆN MENU CHỌN PHÁI HIỆN TẠI (PHÁI CŨ)
+    // 4. CHỌN PHÁI MỚI -> CHỌN PHÁI CŨ
     if (interaction.isStringSelectMenu() && interaction.customId === 'select_new_faction') {
         const newFaction = interaction.values[0];
 
-        // Menu chọn Phái cũ (Lọc bỏ phái mới vừa chọn để tránh đổi sang chính nó)
         const oldFactionOptions = FACTIONS.filter(f => f.value !== newFaction).map(faction => 
-            new StringSelectMenuOptionBuilder()
-                .setLabel(faction.label)
-                .setValue(faction.value)
-                .setEmoji(faction.emoji) 
+            new StringSelectMenuOptionBuilder().setLabel(faction.label).setValue(faction.value).setEmoji(faction.emoji)
         );
 
         const selectMenuOld = new StringSelectMenuBuilder()
-            .setCustomId(`select_old_faction_${newFaction}`) // Lưu tạm Phái mới vào CustomId
+            .setCustomId(`select_old_faction_${newFaction}`)
             .setPlaceholder('Bước 2: Chọn phái HIỆN TẠI của bạn...')
             .addOptions(oldFactionOptions);
 
         const row = new ActionRowBuilder().addComponents(selectMenuOld);
-        
         await interaction.update({ content: `✅ Đã chọn đổi sang: **${newFaction}**\n👇 **Bước 2:** Hãy chọn phái bạn đang chơi hiện tại:`, components: [row] });
     }
 
-    // 4. CHỌN XONG PHÁI CŨ -> HIỆN FORM (MODAL) ĐIỀN INGAME & THỜI GIAN
+    // 5. CHỌN PHÁI CŨ -> HIỆN FORM
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('select_old_faction_')) {
         const newFaction = interaction.customId.replace('select_old_faction_', '');
         const oldFaction = interaction.values[0];
@@ -181,36 +222,23 @@ client.on('interactionCreate', async interaction => {
         const modal = new ModalBuilder().setCustomId(`vote_modal_${newFaction}_${oldFaction}`).setTitle('Hoàn tất đăng ký');
 
         const ingameInput = new TextInputBuilder().setCustomId('ingame').setLabel('Ingame của bạn').setStyle(TextInputStyle.Short).setRequired(true);
-        
-        const timeInput = new TextInputBuilder()
-            .setCustomId('time_option')
-            .setLabel('Thời gian (VinhVien / Thu3Ngay / ThuVaiNgay)')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true);
+        const timeInput = new TextInputBuilder().setCustomId('time_option').setLabel('Thời gian (VinhVien / Thu3Ngay / ThuVaiNgay)').setStyle(TextInputStyle.Short).setRequired(true);
 
-        // Nếu đã từng vote, tự điền lại Ingame & Thời gian cho nhanh
         if (db.votes.has(interaction.user.id)) {
             const oldData = db.votes.get(interaction.user.id);
             ingameInput.setValue(oldData.ingame);
             timeInput.setValue(oldData.timeOptionRaw || oldData.timeOption);
         }
 
-        modal.addComponents(
-            new ActionRowBuilder().addComponents(ingameInput),
-            new ActionRowBuilder().addComponents(timeInput)
-        );
-
-        // Phải dùng showModal vì đây là phản hồi cho Select Menu
+        modal.addComponents(new ActionRowBuilder().addComponents(ingameInput), new ActionRowBuilder().addComponents(timeInput));
         await interaction.showModal(modal);
     }
 
-    // 5. SUBMIT FORM (Lưu DB & Cập nhật Log)
+    // 6. SUBMIT FORM
     if (interaction.isModalSubmit() && interaction.customId.startsWith('vote_modal_')) {
         await interaction.deferReply({ ephemeral: true });
 
-        // Cắt chuỗi CustomId để lấy lại Phái mới và Phái cũ
         const idParts = interaction.customId.split('_'); 
-        // idParts = ['vote', 'modal', 'Phái Mới', 'Phái Cũ']
         const newFaction = idParts[2];
         const oldFaction = idParts[3];
 
@@ -222,52 +250,56 @@ client.on('interactionCreate', async interaction => {
         else if (timeOptionRaw.includes('3')) timeOption = 'Thử vài ba ngày';
         else if (timeOptionRaw.includes('vai')) timeOption = 'Thử vài ngày thấy hợp sẽ đổi hẳn';
 
-        // Lưu hoặc ghi đè DB
         db.votes.set(interaction.user.id, {
-            userId: interaction.user.id,
-            ingame,
-            oldFaction,
-            newFaction,
-            timeOption,
-            timeOptionRaw: interaction.fields.getTextInputValue('time_option')
+            userId: interaction.user.id, ingame, oldFaction, newFaction, timeOption, timeOptionRaw: interaction.fields.getTextInputValue('time_option')
         });
 
-        // TẠO NÚT HỦY ĐK RIÊNG CHO USER
-        const cancelBtn = new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId(`user_cancel_${interaction.user.id}`)
-                .setLabel('Hủy Đăng Ký')
-                .setEmoji('🗑️')
-                .setStyle(ButtonStyle.Danger)
-        );
-
-        await interaction.editReply({ 
-            content: `✅ **Cập nhật thành công!**\nHệ thống ghi nhận: **${ingame}** đổi từ **${oldFaction}** sang **${newFaction}** (${timeOption}).\n*(Nếu muốn đổi lại hoặc hủy, hãy bấm nút bên dưới).*`,
-            components: [cancelBtn]
-        });
-
+        await interaction.editReply({ content: `✅ **Cập nhật thành công!**\nHệ thống ghi nhận: **${ingame}** đổi từ **${oldFaction}** sang **${newFaction}** (${timeOption}).` });
         await updateLogChannel(interaction.client);
     }
 
-    // 6. USER TỰ BẤM NÚT HỦY ĐK CỦA MÌNH
-    if (interaction.isButton() && interaction.customId.startsWith('user_cancel_')) {
-        const targetId = interaction.customId.replace('user_cancel_', '');
-        
-        if (interaction.user.id !== targetId) {
-            return interaction.reply({ content: `❌ Bạn không thể hủy phiếu của người khác!`, ephemeral: true });
+    // 7. BẤM NÚT "HỦY ĐĂNG KÝ CỦA TÔI" (CHỈ USER ĐÓ MỚI HỦY ĐƯỢC)
+    if (interaction.isButton() && interaction.customId === 'cancel_my_vote') {
+        const userId = interaction.user.id;
+
+        // Kiểm tra xem người bấm có trong danh sách vote không
+        if (!db.votes.has(userId)) {
+            return interaction.reply({ content: `❌ Bạn chưa đăng ký đổi phái, không thể hủy!`, ephemeral: true });
         }
 
-        if (db.votes.has(targetId)) {
-            db.votes.delete(targetId);
+        // Hiển thị nút xác nhận (Chỉ người bấm thấy)
+        const confirmBtn = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('confirm_cancel_my_vote').setLabel('Xác Nhận Hủy').setEmoji('⚠️').setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId('abort_cancel').setLabel('Không Hủy Nữa').setStyle(ButtonStyle.Secondary)
+        );
+
+        await interaction.reply({ 
+            content: `⚠️ **Bạn có chắc chắn muốn hủy đăng ký đổi phái không?**\nHành động này sẽ xóa phiếu của bạn khỏi hệ thống.`, 
+            components: [confirmBtn], 
+            ephemeral: true 
+        });
+    }
+
+    // 8. XÁC NHẬN HỦY ĐĂNG KÝ
+    if (interaction.isButton() && interaction.customId === 'confirm_cancel_my_vote') {
+        const userId = interaction.user.id;
+
+        if (db.votes.has(userId)) {
+            db.votes.delete(userId);
             await updateLogChannel(interaction.client);
             
             await interaction.update({ 
-                content: `✅ **Đã hủy đăng ký thành công!** Bạn có thể bấm nút "Bỏ Phiếu Đổi Phái" bên ngoài để vote lại.`, 
+                content: `✅ **Đã hủy đăng ký thành công!**\nBạn có thể bấm nút "Bỏ Phiếu Đổi Phái" để đăng ký lại nếu muốn.`, 
                 components: [] 
             });
         } else {
             await interaction.update({ content: `❌ Không tìm thấy dữ liệu đăng ký của bạn.`, components: [] });
         }
+    }
+
+    // 9. HỦY THAO TÁC XÓA (Bấm nhầm)
+    if (interaction.isButton() && interaction.customId === 'abort_cancel') {
+        await interaction.update({ content: `✅ Đã hủy thao tác xóa. Phiếu của bạn vẫn được giữ nguyên.`, components: [] });
     }
 });
 
@@ -280,37 +312,13 @@ async function updateLogChannel(client) {
     const channel = await client.channels.fetch(process.env.LOG_CHANNEL_ID).catch(() => null);
     if (!channel) return;
 
-    const groupedVotes = {};
-    for (const [key, value] of db.votes) {
-        if (!groupedVotes[value.newFaction]) groupedVotes[value.newFaction] = [];
-        groupedVotes[value.newFaction].push(value);
-    }
-
-    let logContent = `📊 **DANH SÁCH ĐĂNG KÝ ĐỔI PHÁI**\n`;
-    logContent += `⏳ Thời gian: <t:${Math.floor(new Date(db.config.startTime).getTime() / 1000)}:f> - <t:${Math.floor(new Date(db.config.endTime).getTime() / 1000)}:f>\n`;
-    logContent += `*(Mỗi người chỉ tính 1 phiếu - Có thể thay đổi phái tùy thích)*\n\n`;
-
-    if (db.votes.size === 0) {
-        logContent += `*Chưa có ai đăng ký.*`;
-    } else {
-        for (const faction of FACTIONS) {
-            if (groupedVotes[faction.value]) {
-                logContent += `**${faction.emoji} ${faction.label} (${groupedVotes[faction.value].length})**\n`;
-                
-                groupedVotes[faction.value].forEach((vote, index) => {
-                    logContent += `${index + 1}. <@${vote.userId}> (Ingame: ${vote.ingame})\n`;
-                    logContent += `   └ Từ: ${vote.oldFaction} | T/gian: *${vote.timeOption}*\n`;
-                });
-                logContent += `\n`;
-            }
-        }
-    }
-
-    logContent += `*Cập nhật lúc: ${dayjs().format('HH:mm:ss')}*`;
+    const btnCancelRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('cancel_my_vote').setLabel('Hủy Đăng Ký Của Tôi').setEmoji('🗑️').setStyle(ButtonStyle.Danger)
+    );
 
     try {
         const logMsg = await channel.messages.fetch(db.config.logMessageId);
-        await logMsg.edit({ content: logContent });
+        await logMsg.edit({ content: generateLogContent(), components: [btnCancelRow] });
     } catch (error) {
         console.error('Lỗi cập nhật log:', error);
     }
