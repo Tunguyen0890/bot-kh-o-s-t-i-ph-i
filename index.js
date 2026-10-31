@@ -124,7 +124,7 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // 2. BẤM NÚT "BỎ PHIẾU" -> HIỆN MENU CHỌN PHÁI (Thay vì gõ Form)
+    // 2. BẤM NÚT "BỎ PHIẾU" -> CHỌN PHÁI MUỐN ĐỔI (PHÁI MỚI)
     if (interaction.isButton() && interaction.customId === 'register_vote') {
         const now = dayjs();
         const start = dayjs(db.config.startTime);
@@ -134,10 +134,10 @@ client.on('interactionCreate', async interaction => {
         if (now.isBefore(start)) return interaction.reply({ content: `⏳ Chưa tới giờ!`, ephemeral: true });
         if (now.isAfter(end)) return interaction.reply({ content: `🔒 Đã hết hạn đăng ký!`, ephemeral: true });
 
-        // Tạo Menu chọn phái
+        // Menu chọn Phái mới
         const selectMenu = new StringSelectMenuBuilder()
-            .setCustomId('select_faction_to_change')
-            .setPlaceholder('Chọn phái mà bạn muốn đổi sang...')
+            .setCustomId('select_new_faction')
+            .setPlaceholder('Bước 1: Chọn phái mà bạn MUỐN ĐỔI SANG...')
             .addOptions(
                 FACTIONS.map(faction => 
                     new StringSelectMenuOptionBuilder()
@@ -148,49 +148,73 @@ client.on('interactionCreate', async interaction => {
             );
 
         const row = new ActionRowBuilder().addComponents(selectMenu);
-        
-        // Hiển thị menu ẩn
-        await interaction.reply({ content: '👇 Hãy chọn phái bạn muốn đổi sang:', components: [row], ephemeral: true });
+        await interaction.reply({ content: '👇 **Bước 1:** Hãy chọn phái bạn muốn đổi sang:', components: [row], ephemeral: true });
     }
 
-    // 3. CHỌN PHÁI TỪ MENU -> HIỆN FORM ĐIỀN THÔNG TIN
-    if (interaction.isStringSelectMenu() && interaction.customId === 'select_faction_to_change') {
-        const selectedFaction = interaction.values[0];
+    // 3. CHỌN XONG PHÁI MỚI -> HIỆN MENU CHỌN PHÁI HIỆN TẠI (PHÁI CŨ)
+    if (interaction.isStringSelectMenu() && interaction.customId === 'select_new_faction') {
+        const newFaction = interaction.values[0];
 
-        const modal = new ModalBuilder().setCustomId(`vote_modal_${selectedFaction}`).setTitle(`Đổi sang phái: ${selectedFaction}`);
+        // Menu chọn Phái cũ (Lọc bỏ phái mới vừa chọn để tránh đổi sang chính nó)
+        const oldFactionOptions = FACTIONS.filter(f => f.value !== newFaction).map(faction => 
+            new StringSelectMenuOptionBuilder()
+                .setLabel(faction.label)
+                .setValue(faction.value)
+                .setEmoji(faction.emoji) 
+        );
+
+        const selectMenuOld = new StringSelectMenuBuilder()
+            .setCustomId(`select_old_faction_${newFaction}`) // Lưu tạm Phái mới vào CustomId
+            .setPlaceholder('Bước 2: Chọn phái HIỆN TẠI của bạn...')
+            .addOptions(oldFactionOptions);
+
+        const row = new ActionRowBuilder().addComponents(selectMenuOld);
+        
+        await interaction.update({ content: `✅ Đã chọn đổi sang: **${newFaction}**\n👇 **Bước 2:** Hãy chọn phái bạn đang chơi hiện tại:`, components: [row] });
+    }
+
+    // 4. CHỌN XONG PHÁI CŨ -> HIỆN FORM (MODAL) ĐIỀN INGAME & THỜI GIAN
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('select_old_faction_')) {
+        const newFaction = interaction.customId.replace('select_old_faction_', '');
+        const oldFaction = interaction.values[0];
+
+        const modal = new ModalBuilder().setCustomId(`vote_modal_${newFaction}_${oldFaction}`).setTitle('Hoàn tất đăng ký');
 
         const ingameInput = new TextInputBuilder().setCustomId('ingame').setLabel('Ingame của bạn').setStyle(TextInputStyle.Short).setRequired(true);
-        const oldFactionInput = new TextInputBuilder().setCustomId('old_faction').setLabel('Phái hiện tại').setStyle(TextInputStyle.Short).setRequired(true);
+        
         const timeInput = new TextInputBuilder()
             .setCustomId('time_option')
             .setLabel('Thời gian (VinhVien / Thu3Ngay / ThuVaiNgay)')
             .setStyle(TextInputStyle.Short)
             .setRequired(true);
 
-        // Nếu đã từng vote, tự điền lại cho nhanh
+        // Nếu đã từng vote, tự điền lại Ingame & Thời gian cho nhanh
         if (db.votes.has(interaction.user.id)) {
             const oldData = db.votes.get(interaction.user.id);
             ingameInput.setValue(oldData.ingame);
-            oldFactionInput.setValue(oldData.oldFaction);
             timeInput.setValue(oldData.timeOptionRaw || oldData.timeOption);
         }
 
         modal.addComponents(
             new ActionRowBuilder().addComponents(ingameInput),
-            new ActionRowBuilder().addComponents(oldFactionInput),
             new ActionRowBuilder().addComponents(timeInput)
         );
 
+        // Phải dùng showModal vì đây là phản hồi cho Select Menu
         await interaction.showModal(modal);
     }
 
-    // 4. SUBMIT FORM (Lưu DB & Cập nhật Log)
+    // 5. SUBMIT FORM (Lưu DB & Cập nhật Log)
     if (interaction.isModalSubmit() && interaction.customId.startsWith('vote_modal_')) {
         await interaction.deferReply({ ephemeral: true });
 
-        const newFaction = interaction.customId.replace('vote_modal_', '');
+        // Cắt chuỗi CustomId để lấy lại Phái mới và Phái cũ
+        const idParts = interaction.customId.split('_'); 
+        // idParts = ['vote', 'modal', 'Phái Mới', 'Phái Cũ']
+        const newFaction = idParts[2];
+        const oldFaction = idParts[3];
+
         const ingame = interaction.fields.getTextInputValue('ingame');
-        const oldFaction = interaction.fields.getTextInputValue('old_faction');
         let timeOptionRaw = interaction.fields.getTextInputValue('time_option').toLowerCase();
 
         let timeOption = 'Chưa xác định';
@@ -208,7 +232,7 @@ client.on('interactionCreate', async interaction => {
             timeOptionRaw: interaction.fields.getTextInputValue('time_option')
         });
 
-        // TẠO NÚT HỦY ĐK RIÊNG CHO USER NÀY
+        // TẠO NÚT HỦY ĐK RIÊNG CHO USER
         const cancelBtn = new ActionRowBuilder().addComponents(
             new ButtonBuilder()
                 .setCustomId(`user_cancel_${interaction.user.id}`)
@@ -217,20 +241,18 @@ client.on('interactionCreate', async interaction => {
                 .setStyle(ButtonStyle.Danger)
         );
 
-        // Gửi tin nhắn ẩn kèm nút Hủy
         await interaction.editReply({ 
-            content: `✅ **Cập nhật thành công!**\nHệ thống ghi nhận: **${ingame}** đổi sang **${newFaction}** (${timeOption}).\n*(Nếu muốn đổi lại hoặc hủy, hãy bấm nút bên dưới).*`,
+            content: `✅ **Cập nhật thành công!**\nHệ thống ghi nhận: **${ingame}** đổi từ **${oldFaction}** sang **${newFaction}** (${timeOption}).\n*(Nếu muốn đổi lại hoặc hủy, hãy bấm nút bên dưới).*`,
             components: [cancelBtn]
         });
 
         await updateLogChannel(interaction.client);
     }
 
-    // 5. USER TỰ BẤM NÚT HỦY ĐK CỦA MÌNH
+    // 6. USER TỰ BẤM NÚT HỦY ĐK CỦA MÌNH
     if (interaction.isButton() && interaction.customId.startsWith('user_cancel_')) {
         const targetId = interaction.customId.replace('user_cancel_', '');
         
-        // Đảm bảo chỉ chính chủ mới bấm được nút này
         if (interaction.user.id !== targetId) {
             return interaction.reply({ content: `❌ Bạn không thể hủy phiếu của người khác!`, ephemeral: true });
         }
@@ -239,29 +261,12 @@ client.on('interactionCreate', async interaction => {
             db.votes.delete(targetId);
             await updateLogChannel(interaction.client);
             
-            // Cập nhật lại tin nhắn ẩn, xóa nút đi
             await interaction.update({ 
                 content: `✅ **Đã hủy đăng ký thành công!** Bạn có thể bấm nút "Bỏ Phiếu Đổi Phái" bên ngoài để vote lại.`, 
                 components: [] 
             });
         } else {
-            await interaction.update({ content: `❌ Không tìm thấy dữ liệu đăng ký của bạn (có thể đã bị Admin xóa).`, components: [] });
-        }
-    }
-
-    // 6. ADMIN BẤM NÚT XÓA TRÊN KÊNH LOG (Dự phòng)
-    if (interaction.isButton() && interaction.customId.startsWith('admin_cancel_')) {
-        if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-            return interaction.reply({ content: '❌ Bạn không có quyền Admin!', ephemeral: true });
-        }
-
-        const targetId = interaction.customId.replace('admin_cancel_', '');
-        if (db.votes.has(targetId)) {
-            db.votes.delete(targetId); 
-            await updateLogChannel(interaction.client); 
-            return interaction.reply({ content: `✅ Đã xóa đăng ký của <@${targetId}>.`, ephemeral: true });
-        } else {
-            return interaction.reply({ content: `❌ Người này không có trong danh sách.`, ephemeral: true });
+            await interaction.update({ content: `❌ Không tìm thấy dữ liệu đăng ký của bạn.`, components: [] });
         }
     }
 });
