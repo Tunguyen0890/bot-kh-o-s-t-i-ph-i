@@ -1,13 +1,14 @@
 {
-  "name": "nth-khaosat-bot",
+  "name": "nth-bot",
   "version": "1.0.0",
-  "description": "Bot khao sat doi phai Nghich Thuy Han",
+  "description": "Bot khao sat doi phai",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "discord.js": "^14.14.1",
+    "dayjs": "^1.11.10",
     "dotenv": "^16.3.1"
   }
 }
