@@ -156,7 +156,7 @@ client.on('interactionCreate', async interaction => {
         const embed = new EmbedBuilder()
             .setTitle('📊 BẢNG KHẢO SÁT ĐỔI PHÁI - NGHỊCH THỦY HÀN')
             .setDescription(
-                `Chào các hiệp khách! BQT muốn thăm dò ý kiến của mọi người về việc chuyển đổi phái.\n\n` +
+                `Chào ae! Đông Hoa muốn thăm dò ý kiến của mọi người về việc chuyển đổi phái.\n\n` +
                 `👉 Bấm nút bên dưới, chọn phái muốn đổi và điền thông tin.\n` +
                 `*(Bạn có thể bấm lại để thay đổi lựa chọn bất cứ lúc nào).*\n\n` +
                 `⏳ **Thời gian khảo sát:** Từ <t:${Math.floor(start.valueOf() / 1000)}:f> đến <t:${Math.floor(end.valueOf() / 1000)}:f> (Kéo dài ${hours} tiếng)`
