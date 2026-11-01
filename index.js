@@ -9,19 +9,21 @@ const {
     TextInputBuilder, 
     TextInputStyle, 
     EmbedBuilder, 
-    PermissionFlagsBits,
+    // Đã bỏ PermissionFlagsBits vì không dùng Admin chung nữa
     SlashCommandBuilder,
     REST,
     Routes,
     StringSelectMenuBuilder,
     StringSelectMenuOptionBuilder,
-    ChannelType // Cần import thêm cái này để giới hạn chỉ chọn kênh chat
+    ChannelType 
 } = require('discord.js');
 const dayjs = require('dayjs');
 
 // ==========================================
-// CẤU HÌNH DANH SÁCH PHÁI (CUSTOM EMOJI ID)
+// ĐIỀN ID DISCORD CỦA BẠN VÀO ĐÂY ĐỂ CẤP QUYỀN DUY NHẤT
 // ==========================================
+const ADMIN_ID = '792034767695511552'; 
+
 const FACTIONS = [
     { label: 'Huyền Cơ', value: 'Huyền Cơ', emoji: '<:HuyenCo:1566154772120076371>' },
     { label: 'Thần Tương', value: 'Thần Tương', emoji: '<:ThanTuong:1554525281396719696>' },
@@ -50,17 +52,14 @@ const client = new Client({
     ] 
 });
 
-// ==========================================
-// ĐĂNG KÝ SLASH COMMANDS (Thêm tuỳ chọn Kênh)
-// ==========================================
 const commands = [
     new SlashCommandBuilder()
         .setName('setup-vote')
-        .setDescription('Tạo bảng khảo sát đổi phái (Admin)')
+        .setDescription('Tạo bảng khảo sát đổi phái')
         .addChannelOption(option => 
             option.setName('kenh')
                 .setDescription('Chọn kênh để gửi bảng khảo sát')
-                .addChannelTypes(ChannelType.GuildText) // Chỉ cho chọn kênh chat chữ
+                .addChannelTypes(ChannelType.GuildText) 
                 .setRequired(true))
         .addIntegerOption(option => 
             option.setName('thoi-gian')
@@ -88,9 +87,6 @@ client.once('ready', async () => {
     }
 });
 
-// ==========================================
-// HÀM TẠO NỘI DUNG LOG
-// ==========================================
 function generateLogContent() {
     const groupedVotes = {};
     for (const [key, value] of db.votes) {
@@ -108,7 +104,6 @@ function generateLogContent() {
         for (const faction of FACTIONS) {
             if (groupedVotes[faction.value]) {
                 logContent += `**${faction.emoji} ${faction.label} (${groupedVotes[faction.value].length})**\n`;
-                
                 groupedVotes[faction.value].forEach((vote, index) => {
                     logContent += `${index + 1}. <@${vote.userId}> (Ingame: ${vote.ingame})\n`;
                     const oldFactionData = FACTIONS.find(f => f.value === vote.oldFaction);
@@ -123,12 +118,9 @@ function generateLogContent() {
     return logContent;
 }
 
-// ==========================================
-// XỬ LÝ LỆNH SLASH & TƯƠNG TÁC
-// ==========================================
 client.on('interactionCreate', async interaction => {
     
-    // 1. LỆNH CHECK VOTE
+    // LỆNH CHECK VOTE (Ai cũng xem được)
     if (interaction.isChatInputCommand() && interaction.commandName === 'check-vote') {
         if (!db.config.startTime) {
             return interaction.reply({ content: '❌ Hiện chưa có đợt khảo sát nào!', ephemeral: true });
@@ -136,15 +128,17 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply({ content: generateLogContent(), ephemeral: true });
     }
 
-    // 2. LỆNH SETUP VOTE (Admin)
+    // LỆNH SETUP VOTE (CHỈ ADMIN_ID ĐƯỢC DÙNG)
     if (interaction.isChatInputCommand() && interaction.commandName === 'setup-vote') {
-        if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-            return interaction.reply({ content: '❌ Bạn cần quyền Admin!', ephemeral: true });
+        
+        // Kiểm tra ID người dùng với ADMIN_ID
+        if (interaction.user.id !== ADMIN_ID) {
+            return interaction.reply({ content: '❌ Bạn không có quyền sử dụng lệnh này!', ephemeral: true });
         }
 
         await interaction.deferReply({ ephemeral: true });
 
-        const targetChannel = interaction.options.getChannel('kenh'); // Lấy kênh được chọn
+        const targetChannel = interaction.options.getChannel('kenh'); 
         const hours = interaction.options.getInteger('thoi-gian');
         const start = dayjs(); 
         const end = start.add(hours, 'hour');
@@ -156,7 +150,7 @@ client.on('interactionCreate', async interaction => {
         const embed = new EmbedBuilder()
             .setTitle('📊 BẢNG KHẢO SÁT ĐỔI PHÁI - NGHỊCH THỦY HÀN')
             .setDescription(
-                `Chào ae! Đông Hoa muốn thăm dò ý kiến của mọi người về việc chuyển đổi phái.\n\n` +
+                `Chào các hiệp khách! BQT muốn thăm dò ý kiến của mọi người về việc chuyển đổi phái.\n\n` +
                 `👉 Bấm nút bên dưới, chọn phái muốn đổi và điền thông tin.\n` +
                 `*(Bạn có thể bấm lại để thay đổi lựa chọn bất cứ lúc nào).*\n\n` +
                 `⏳ **Thời gian khảo sát:** Từ <t:${Math.floor(start.valueOf() / 1000)}:f> đến <t:${Math.floor(end.valueOf() / 1000)}:f> (Kéo dài ${hours} tiếng)`
@@ -169,13 +163,11 @@ client.on('interactionCreate', async interaction => {
         );
 
         try {
-            // Gửi bảng khảo sát vào kênh Admin đã chọn
             await targetChannel.send({ embeds: [embed], components: [btn] });
         } catch (error) {
-            return interaction.editReply({ content: `❌ Bot không có quyền gửi tin nhắn vào kênh <#${targetChannel.id}>. Vui lòng kiểm tra lại quyền!` });
+            return interaction.editReply({ content: `❌ Bot không có quyền gửi tin nhắn vào kênh <#${targetChannel.id}>.` });
         }
 
-        // Tạo tin nhắn Log trên kênh Log (nếu có cấu hình)
         if (process.env.LOG_CHANNEL_ID) {
             const logChannel = await client.channels.fetch(process.env.LOG_CHANNEL_ID).catch(() => null);
             if (logChannel) {
@@ -189,7 +181,7 @@ client.on('interactionCreate', async interaction => {
         await interaction.editReply({ content: `✅ Đã tạo bảng khảo sát thành công tại kênh <#${targetChannel.id}>!` });
     }
 
-    // 3. BẤM NÚT "BỎ PHIẾU" -> CHỌN PHÁI MỚI
+    // CÁC NÚT BẤM CỦA USER (GIỮ NGUYÊN)
     if (interaction.isButton() && interaction.customId === 'register_vote') {
         const now = dayjs();
         const start = dayjs(db.config.startTime);
@@ -208,10 +200,8 @@ client.on('interactionCreate', async interaction => {
         await interaction.reply({ content: '👇 **Bước 1:** Hãy chọn phái bạn muốn đổi sang:', components: [row], ephemeral: true });
     }
 
-    // 4. CHỌN PHÁI MỚI -> CHỌN PHÁI CŨ
     if (interaction.isStringSelectMenu() && interaction.customId === 'select_new_faction') {
         const newFaction = interaction.values[0];
-
         const oldFactionOptions = FACTIONS.filter(f => f.value !== newFaction).map(faction => 
             new StringSelectMenuOptionBuilder().setLabel(faction.label).setValue(faction.value).setEmoji(faction.emoji)
         );
@@ -225,7 +215,6 @@ client.on('interactionCreate', async interaction => {
         await interaction.update({ content: `✅ Đã chọn đổi sang: **${newFaction}**\n👇 **Bước 2:** Hãy chọn phái bạn đang chơi hiện tại:`, components: [row] });
     }
 
-    // 5. CHỌN PHÁI CŨ -> HIỆN FORM
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('select_old_faction_')) {
         const newFaction = interaction.customId.replace('select_old_faction_', '');
         const oldFaction = interaction.values[0];
@@ -245,10 +234,8 @@ client.on('interactionCreate', async interaction => {
         await interaction.showModal(modal);
     }
 
-    // 6. SUBMIT FORM
     if (interaction.isModalSubmit() && interaction.customId.startsWith('vote_modal_')) {
         await interaction.deferReply({ ephemeral: true });
-
         const idParts = interaction.customId.split('_'); 
         const newFaction = idParts[2];
         const oldFaction = idParts[3];
@@ -269,10 +256,8 @@ client.on('interactionCreate', async interaction => {
         await updateLogChannel(interaction.client);
     }
 
-    // 7. BẤM NÚT "HỦY ĐĂNG KÝ CỦA TÔI"
     if (interaction.isButton() && interaction.customId === 'cancel_my_vote') {
         const userId = interaction.user.id;
-
         if (!db.votes.has(userId)) {
             return interaction.reply({ content: `❌ Bạn chưa đăng ký đổi phái, không thể hủy!`, ephemeral: true });
         }
@@ -289,32 +274,22 @@ client.on('interactionCreate', async interaction => {
         });
     }
 
-    // 8. XÁC NHẬN HỦY ĐĂNG KÝ
     if (interaction.isButton() && interaction.customId === 'confirm_cancel_my_vote') {
         const userId = interaction.user.id;
-
         if (db.votes.has(userId)) {
             db.votes.delete(userId);
             await updateLogChannel(interaction.client);
-            
-            await interaction.update({ 
-                content: `✅ **Đã hủy đăng ký thành công!**\nBạn có thể bấm nút "Bỏ Phiếu Đổi Phái" để đăng ký lại nếu muốn.`, 
-                components: [] 
-            });
+            await interaction.update({ content: `✅ **Đã hủy đăng ký thành công!**`, components: [] });
         } else {
             await interaction.update({ content: `❌ Không tìm thấy dữ liệu đăng ký của bạn.`, components: [] });
         }
     }
 
-    // 9. HỦY THAO TÁC XÓA
     if (interaction.isButton() && interaction.customId === 'abort_cancel') {
         await interaction.update({ content: `✅ Đã hủy thao tác xóa. Phiếu của bạn vẫn được giữ nguyên.`, components: [] });
     }
 });
 
-// ==========================================
-// HÀM CẬP NHẬT KÊNH LOG
-// ==========================================
 async function updateLogChannel(client) {
     if (!process.env.LOG_CHANNEL_ID || !db.config.logMessageId) return;
 
